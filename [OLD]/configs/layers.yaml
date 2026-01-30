@@ -1,0 +1,200 @@
+# =============================================================================
+# Layers Pipeline Configuration (Paso 3) - PHASE 2 ENHANCED
+# =============================================================================
+# 
+# Proxy Layers train models that predict external indicators from internal
+# cluster features. During inference (2025+), only internal features are used.
+#
+# PHASE 1 IMPROVEMENTS:
+#   1. VIX proxy: Δlog(VIX) target + enhanced stress features
+#   2. Rates proxy: Longer horizon (10d) + categorical (down/flat/up)
+#   3. Recession proxy: Internal risk-off (drawdown-based) + stress index
+#   4. Factor proxy: Binary MOM > 0 mode (more robust with limited data)
+#   5. Calibration: Platt scaling for classifiers + ECE metrics
+#   6. Uncertainty: Residual std for regression proxies
+#
+# PHASE 2 IMPROVEMENTS:
+#   7. VIX: Spike detection (classification) - más útil para RL
+#   8. VIX: Multi-horizonte (t+1, t+5)
+#   9. Rates: Leakage test + drift monitoring
+#  10. Risk-off: Future window verification + feature independence check
+#
+# Usage:
+#   python -m athenai.scripts.train_layers --config configs/layers.yaml --train
+#   python -m athenai.scripts.train_layers --config configs/layers.yaml --predict
+# =============================================================================
+
+layers:
+  # Run identifier
+  run_id: "layers_v3"  # Updated version for Phase 2
+  
+  # Input from clustering pipeline
+  clustering_run_id: "clustering_v1"  # Must match your clustering run
+  cluster_set_id: "behavioral_k100_v1"  # Which cluster set to use
+  
+  # Training date range (external data only fetched for this period)
+  train_start: "2020-01-01"
+  train_end: "2024-12-31"
+  
+  # ==========================================================================
+  # Proxy A: VIX Synthetic (PHASE 2 - SPIKE DETECTION)
+  # ==========================================================================
+  # CHANGE: Now uses SPIKE DETECTION (classification) instead of regression
+  # - Spike = Δlog(VIX) > q90 (top 10% daily changes)
+  # - This is MORE USEFUL for RL than exact prediction
+  # - AUC is the primary metric instead of R²
+  proxy_vix:
+    enabled: true
+    target_transform: "spike"  # "spike" = binary classification (BEST FOR RL)
+    horizon: 1  # t+1
+    high_threshold: 25.0  # VIX > 25 = high volatility
+    classification_enabled: true  # Also train prob_vix_high
+    # === SPIKE DETECTION (PRIMARY) ===
+    use_spike_detection: true
+    spike_quantile: 0.90  # Top 10% = spike
+    spike_threshold: null  # Or explicit threshold (e.g., 0.05)
+    # === MULTI-HORIZON ===
+    use_multi_horizon: true
+    horizons: [1, 5]  # t+1 (fast shock), t+5 (macro trend)
+    # === AUTOREGRESSIVE (for inference) ===
+    use_autoregressive: true
+    ar_feature_name: "f_pred_vix_spike_lag1"
+    # Enhanced stress features
+    use_stress_features: true
+    realized_vol_window: 20
+    jumpiness_window: 10
+    corr_spike_window: 60
+    # Regularization
+    ridge_alpha: 1.0  # For regression mode
+    logreg_C: 1.0  # For spike classification
+  
+  # ==========================================================================
+  # Proxy B: Rate Oracle (PHASE 2 - LEAKAGE & DRIFT)
+  # ==========================================================================
+  # Predicts DGS10 change with longer horizon and categorical buckets
+  # NEW: Includes leakage test and drift monitoring
+  proxy_rates:
+    enabled: true
+    horizon: 10  # t+10 days (more macro trend)
+    classification_enabled: true  # prob_rate_up
+    # Categorical mode: down/flat/up instead of exact bps
+    use_categorical: true
+    up_threshold_bps: 5.0  # > +5 bps = up
+    down_threshold_bps: -5.0  # < -5 bps = down
+    # Duration proxy features
+    use_duration_features: true
+    # === LEAKAGE TEST ===
+    run_leakage_test: true  # Verify no forward info in features
+    leakage_test_shuffle_target: true  # Shuffle target to verify ~random
+    # === DRIFT MONITORING ===
+    monitor_drift: true  # Track performance by time window
+    drift_window_months: 6
+    drift_alert_threshold: 0.15  # Alert if performance changes >15%
+    # Regularization
+    ridge_alpha: 1.0
+    softmax_C: 1.0  # For categorical mode
+  
+  # ==========================================================================
+  # Proxy C: Recession / Risk-Off Detector (PHASE 2 - FUTURE WINDOW)
+  # ==========================================================================
+  # Uses INTERNAL risk-off label with FUTURE WINDOW (proper RL formulation)
+  # NEW: y_t = 1 if min(ret_{t+1:t+H}) < threshold (forward-looking)
+  proxy_recession:
+    enabled: true
+    mode: "internal"  # Prefer internal (from drawdown)
+    # Internal risk-off settings
+    internal_dd_threshold: -0.05  # DD > 5% = risk-off (fallback)
+    internal_window: 60
+    # === FUTURE WINDOW (PHASE 2) ===
+    use_future_window: true  # Predict FUTURE drawdown (proper for RL)
+    future_horizon: 10  # Look 10 days ahead
+    # === QUANTILE-BASED THRESHOLD ===
+    use_quantile_threshold: true  # Use bottom X% as risk events
+    risk_quantile: 0.10  # Bottom 10% forward returns = risk-off
+    # === FEATURE INDEPENDENCE CHECK ===
+    verify_feature_independence: true  # Verify features != target calculation
+    # Continuous stress index (alternative to binary)
+    use_stress_index: true  # z(corr) + z(vol) - z(breadth)
+    # NBER settings (if mode="nber" or "both")
+    usrec_publication_lag_days: 30
+    # Market risk-off settings (if mode="market" or "both")
+    ma_window: 200
+    # Regularization
+    logreg_C: 1.0
+  
+  # ==========================================================================
+  # Proxy D: Factor Monitor (ENHANCED)
+  # ==========================================================================
+  # Binary mode: Predict MOM > 0 (more robust with ~54 monthly samples)
+  proxy_factors:
+    enabled: true
+    factors:
+      - "smb"
+      - "hml"
+      - "mom"
+    include_market: false
+    frequency: "monthly"
+    # Binary mode (recommended for limited data)
+    use_binary_mode: true  # Predict MOM > 0 instead of multiclass
+    binary_target: "mom"  # Which factor to predict > 0
+    # Persistence baseline
+    use_persistence_baseline: true  # Compare against "last winner persists"
+    # Regularization
+    softmax_C: 1.0
+  
+  # ==========================================================================
+  # Cross-Validation Settings (ENHANCED)
+  # ==========================================================================
+  cv_config:
+    n_folds: 5
+    val_months: 6  # 6-month validation window per fold
+    min_train_months: 12  # Minimum training data
+    gap_days: 1  # Gap between train and val to avoid leakage
+    # Calibration settings
+    enable_calibration: true  # Platt scaling for classifiers
+    calibration_method: "platt"  # "platt", "temperature", "isotonic"
+    # Uncertainty estimation
+    compute_uncertainty: true  # Store residual_std for regression proxies
+  
+  # ==========================================================================
+  # Universe Features Configuration (ENHANCED)
+  # ==========================================================================
+  # Enhanced with stress features for VIX prediction
+  universe_features:
+    # Correlation features
+    corr_window: 20
+    corr_window_long: 60  # For corr_spike = corr_20 - corr_60
+    # Volatility features
+    vol_window: 20
+    # Stress features (for VIX proxy)
+    stress_window: 60
+    realized_vol_window: 20  # Rolling std of f_mkt_cluster
+    jumpiness_window: 10  # Rolling max |ret| of f_mkt_cluster
+    compute_skew_cs: true  # Cross-sectional skewness
+    # Breadth features
+    breadth_threshold: 0.0
+    # PCA factors
+    include_pca_factors: true
+    n_pca_factors: 10
+    # Spread features (for rates proxy)
+    defensive_vol_quantile: 0.1
+    aggressive_vol_quantile: 0.9
+    compute_lowvol_highvol_spread: true  # Low vol minus high vol
+    compute_momentum_spread: true  # High mom minus low mom
+  
+  # ==========================================================================
+  # External Data Settings (TRAIN only)
+  # ==========================================================================
+  external_cache_dir: "data/external"
+  
+  # ==========================================================================
+  # Output Directories
+  # ==========================================================================
+  cache_dir: "data/cache"
+  models_dir: "data/cache/models"
+  reports_dir: "data/reports"
+  
+  # Output filenames
+  universe_features_name: "universe_features_daily_{cluster_set_id}.parquet"
+  proxy_preds_name: "proxy_preds_{cluster_set_id}.parquet"
+  enriched_features_name: "cluster_features_enriched_{cluster_set_id}.parquet"

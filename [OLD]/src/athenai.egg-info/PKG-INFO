@@ -1,0 +1,480 @@
+Metadata-Version: 2.4
+Name: athenai
+Version: 0.1.0
+Summary: AthenAI Competition - Macro Portfolio Management Pipeline
+Author: AthenAI Team
+License: MIT
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Financial and Insurance Industry
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: polars>=1.0.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: rich>=13.0.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0.0; extra == "dev"
+Provides-Extra: ml
+Requires-Dist: scikit-learn>=1.3.0; extra == "ml"
+Requires-Dist: torch>=2.0.0; extra == "ml"
+Provides-Extra: viz
+Requires-Dist: matplotlib>=3.7.0; extra == "viz"
+Requires-Dist: plotly>=5.15.0; extra == "viz"
+
+# AthenAI Competition - Macro Portfolio Management
+
+## Introduccion
+
+Este proyecto implementa un pipeline modular para la competicion AthenAI de gestion de carteras. El objetivo es construir un modelo que tome decisiones de inversion sobre un universo de aproximadamente 14,000 algoritmos de trading, superando al benchmark propuesto.
+
+### El Problema
+
+La competicion presenta un desafio particular: el modelo final debe funcionar completamente offline, sin acceso a APIs ni datos externos. Esto significa que no podemos consultar indicadores macroeconomicos tradicionales (PIB, IPC, tipos de interes) durante la ejecucion.
+
+### La Solucion
+
+La arquitectura se basa en tres capas secuenciales:
+
+1. **Capa 0 - Preprocesamiento**: Transformar los CSVs crudos en datos estructurados y limpios
+2. **Capa 1 - Features y Clustering**: Extraer la "personalidad" de cada algoritmo y agruparlos en "super-activos"
+3. **Capa 2 - Estimador Macro**: Inferir el estado macroeconomico usando solo datos de mercado
+4. **Capa 3 - Agente RL**: Tomar decisiones de inversion basadas en el estado estimado
+
+Esta guia explica como ejecutar cada paso del pipeline, que produce cada uno, y como se conectan entre si.
+
+---
+
+## Requisitos Previos
+
+### 1. Instalar el Paquete
+
+El proyecto usa `pyproject.toml` para la configuracion. Instala en modo desarrollo:
+
+```bash
+pip install -e .
+```
+
+Esto registra los entry points CLI y hace disponible el paquete `athenai` en tu entorno Python.
+
+### 2. Estructura de Datos Esperada
+
+Los datos de la competicion deben estar en `data/datos_competicion/`:
+
+```
+data/
+  datos_competicion/
+    algoritmos/           # ~14,000 CSVs, uno por algoritmo
+      00eyz.csv
+      00kZg.csv
+      ...
+    macro_data.csv        # Datos macroeconomicos historicos
+    benchmark_monthly_returns.csv
+    benchmark_yearly_returns.csv
+    trades_benchmark.csv
+```
+
+Cada CSV de algoritmo contiene series temporales con columnas `datetime` y `close`.
+
+---
+
+## Paso 1: Preprocesamiento (Capa 0)
+
+### Que Hace
+
+El preprocesamiento transforma los CSVs crudos en datasets estructurados. Este paso es fundamental porque:
+
+- Normaliza los datos de 14,000 fuentes heterogeneas a un formato uniforme
+- Calcula retornos diarios evitando look-ahead bias
+- Filtra algoritmos de baja calidad (pocos datos, precios constantes)
+- Genera features rolling (volatilidad, momentum) de forma consistente
+
+### Comando de Ejecucion
+
+```bash
+# Opcion A: Con archivo de configuracion (recomendado)
+python -m athenai.scripts.run_preprocess --config configs/preprocess.yaml --overwrite
+
+# Opcion B: Con parametros directos
+python -m athenai.scripts.run_preprocess --root-dir data/datos_competicion --overwrite
+```
+
+### Salidas Generadas
+
+El pipeline crea un directorio versionado en `data/cache/<run_id>/`:
+
+| Archivo | Descripcion | Columnas Clave |
+|---------|-------------|----------------|
+| `algos_panel.parquet` | Panel diario de todos los algoritmos | algo_id, date, close, ret_1d, logret_1d |
+| `algos_meta.parquet` | Estadisticas por algoritmo | algo_id, n_obs, coverage, ret_mean, ret_std |
+| `algos_meta_good.parquet` | Solo algoritmos de calidad | Filtrado por min_obs=60, min_coverage=0.70 |
+| `algos_features.parquet` | Features rolling para todos | vol_20d, vol_60d, mom_20d, sharpe_20d, etc. |
+| `algos_features_good.parquet` | Features solo para buenos | Mismo esquema, filtrado |
+| `alive_intervals.parquet` | Rangos de fechas activas | algo_id, first_date, last_date |
+| `benchmark_*.parquet` | Datos del benchmark limpios | Trades, returns mensuales/anuales |
+| `manifest.json` | Metadata de la ejecucion | run_id, config, timings, warnings |
+
+### Configuracion Clave (`configs/preprocess.yaml`)
+
+```yaml
+preprocess:
+  min_obs: 60              # Minimo de observaciones para "good"
+  min_coverage: 0.70       # Ratio minimo (n_obs / span_days)
+  max_abs_ret_clip: 0.50   # Clipear retornos extremos a +-50%
+  feature_windows:
+    - 20   # ~1 mes de trading
+    - 60   # ~3 meses
+    - 120  # ~6 meses
+```
+
+### Por Que Estos Filtros
+
+- **min_obs=60**: Un algoritmo con menos de 60 dias de historia no tiene suficientes datos para estimar parametros confiables.
+- **min_coverage=0.70**: Evita algoritmos que operan esporadicamente (gaps largos entre trades).
+- **clip_returns=0.50**: Retornos diarios mayores a 50% son probablemente errores de datos o eventos anomalos que distorsionarian el clustering.
+
+### Verificacion
+
+Tras ejecutar, revisa el reporte generado:
+
+```bash
+cat data/reports/preprocess_<run_id>.md
+```
+
+El reporte muestra estadisticas de los retornos, cuantos algoritmos pasaron los filtros, y advertencias de calidad.
+
+---
+
+## Paso 2: Features de Personalidad (Capa 1)
+
+### Que Hace
+
+Este paso calcula metricas estaticas que definen la "personalidad" de cada algoritmo. Estas features se usaran posteriormente para clustering.
+
+La idea central es que algoritmos con comportamiento similar (misma volatilidad, drawdowns parecidos, sesgo en retornos) probablemente siguen estrategias similares y pueden agruparse.
+
+### Comando de Ejecucion
+
+```bash
+# Opcion A: Usando el run_id del preprocesamiento
+python -m athenai.scripts.run_personality --preprocess-run-id <PREPROCESS_RUN_ID>
+
+# Opcion B: Usar automaticamente el mas reciente
+python -m athenai.scripts.run_personality --latest --overwrite
+
+# Opcion C: Con archivo de configuracion
+python -m athenai.scripts.run_personality --config configs/personality.yaml
+```
+
+**Nota**: Este paso depende del preprocesamiento. Debes ejecutar Paso 1 primero.
+
+### Salidas Generadas
+
+Crea un nuevo directorio `data/cache/<personality_run_id>/`:
+
+| Archivo | Descripcion |
+|---------|-------------|
+| `algo_personality_static.parquet` | Features de personalidad para TODOS los algoritmos |
+| `algo_personality_static_good.parquet` | Solo algoritmos con min_obs >= 120 |
+| `manifest.json` | Metadata incluyendo parent_run_id |
+
+### Features Calculadas
+
+El archivo de personalidad incluye:
+
+**Perfil de Rendimiento:**
+- `total_return`: Retorno total acumulado
+- `cagr`: Tasa de crecimiento anual compuesto
+- `sharpe_ann`: Ratio de Sharpe anualizado
+- `sortino_ann`: Ratio de Sortino (penaliza solo volatilidad negativa)
+- `calmar`: Ratio CAGR / MaxDrawdown
+
+**Perfil de Riesgo:**
+- `vol_ann`: Volatilidad anualizada
+- `max_drawdown`: Caida maxima historica (negativo)
+- `max_drawdown_duration`: Dias en el peor drawdown
+- `ulcer_index`: Medida de "dolor" (integral del drawdown)
+- `time_in_drawdown`: Fraccion del tiempo bajo agua
+
+**Distribucion de Retornos:**
+- `skew`: Asimetria (negativo = colas izquierdas mas pesadas)
+- `excess_kurtosis`: Colas gruesas (> 3 = mas extremos que normal)
+- `tail_ratio_95_05`: Ratio entre percentil 95 y percentil 5
+- `q01, q05, q95, q99`: Percentiles de retornos
+
+**Comportamiento Temporal:**
+- `autocorr_ret_1`: Autocorrelacion de lag 1 (momentum vs mean-reversion)
+- `trend_r2`: R-cuadrado de regresion lineal sobre equity curve
+- `momentum_120d`: Retorno de los ultimos 120 dias
+
+### Por Que Estas Metricas
+
+Cada metrica captura un aspecto diferente de la estrategia subyacente:
+
+- **Max Drawdown**: Los jueces de la competicion mencionan explicitamente que valoran la gestion del drawdown. Un algoritmo con alto Sharpe pero drawdowns enormes es peligroso.
+- **Ulcer Index**: Mas informativo que max drawdown solo, porque considera cuanto tiempo permanece el drawdown.
+- **Skew**: Estrategias de "vender puts" tienen skew muy negativo (ganan poco frecuentemente, pero pierden mucho en crisis). Queremos detectar esto.
+- **Autocorrelacion**: Detecta si el algoritmo es "momentum" (autocorr positiva) o "mean-reversion" (autocorr negativa).
+
+### Verificacion
+
+```bash
+cat data/reports/report_personality_<run_id>.md
+```
+
+El reporte muestra percentiles de cada metrica y los 10 algoritmos mas extremos (mejor Sharpe, peor drawdown, etc.).
+
+---
+
+## Paso 3: Clustering (Capa 1 - Super-Activos)
+
+### Que Hace
+
+Agrupar 14,000 algoritmos es inmanejable para un modelo de RL. Este paso reduce el universo a 50-100 "super-activos" (clusters) que representan estrategias similares.
+
+El clustering usa dos familias de features:
+
+1. **Behavioral**: Agrupa por metricas de personalidad (volatilidad, drawdown, skew)
+2. **Correlation Embedding**: Agrupa por estructura de correlacion (PCA de retornos)
+
+### Comando de Ejecucion
+
+```bash
+# Con archivo de configuracion
+python -m athenai.scripts.run_clustering --config configs/clustering.yaml
+
+# Opciones adicionales
+python -m athenai.scripts.run_clustering --config configs/clustering.yaml \
+    --preprocess-run-id <PREPROCESS_RUN_ID> \
+    --personality-run-id <PERSONALITY_RUN_ID> \
+    --overwrite
+```
+
+**Nota**: Este paso depende de los Pasos 1 y 2. Actualiza los run_ids en `configs/clustering.yaml` antes de ejecutar.
+
+### Pasos Internos del Pipeline
+
+El clustering ejecuta 5 sub-pasos secuenciales:
+
+**1. Build Factor Timeseries**
+- Aplica PCA a los retornos de todos los algoritmos
+- Extrae K factores que explican la varianza comun
+- Output: `factor_timeseries.parquet`, `pca_model.npz`
+
+**2. Compute Factor Exposures**
+- Regresion de cada algoritmo contra los factores
+- Calcula betas (exposiciones) y R-cuadrado
+- Output: `algo_factor_exposures_all.parquet`
+
+**3. Fit Cluster Models**
+- Aplica K-Means o MiniBatch-KMeans
+- Genera asignaciones de cluster
+- Output: `cluster_model_*.pkl`, `cluster_map_*.parquet`, `cluster_meta_*.parquet`
+
+**4. Build Cluster Timeseries**
+- Agrega retornos de algoritmos por cluster (equal-weight)
+- Calcula si cada cluster esta "vivo" en cada fecha
+- Output: `cluster_timeseries_*.parquet`, `cluster_alive_mask_*.parquet`
+
+**5. Build Cluster Features Daily**
+- Features rolling a nivel de cluster (vol, momentum, drawdown)
+- Listo para usar en el entorno de RL
+- Output: `cluster_features_daily_*.parquet`
+
+### Configuracion Clave (`configs/clustering.yaml`)
+
+```yaml
+# IDs de runs previos (ACTUALIZAR antes de ejecutar)
+preprocess_run_id: "20260119_225417_8512cdac4218"
+personality_run_id: "20260119_232926_111494c43caf"
+
+# Configuracion de factores
+factor_config:
+  pca_k: 10                # Numero de factores PCA
+  min_algos_pca: 500       # Minimo de algos para PCA estable
+
+# Definicion de cluster sets
+cluster_sets:
+  - cluster_set_id: "behavioral_k100_v1"
+    family: "behavioral"
+    k: 100                 # Numero de clusters
+    feature_source: "static_features"
+    scaler: "robust"       # Escalado IQR (robusto a outliers)
+    algorithm: "minibatch_kmeans"
+    min_cluster_size: 10   # Clusters muy pequenos se descartan
+```
+
+### Por Que Dos Familias de Clustering
+
+- **Behavioral**: Agrupa algoritmos que "se comportan igual" (misma volatilidad, drawdowns similares). Util para diversificacion por estilo.
+- **Correlation Embedding**: Agrupa algoritmos que "se mueven juntos". Util para hedging y control de exposicion a factores.
+
+Tener ambos permite al modelo de RL elegir la granularidad apropiada para cada decision.
+
+### Verificacion
+
+Tras ejecutar, tendras en `data/cache/clustering_v1/`:
+
+```bash
+ls data/cache/clustering_v1/
+# cluster_map_behavioral_k100_v1.parquet
+# cluster_meta_behavioral_k100_v1.parquet
+# cluster_timeseries_behavioral_k100_v1.parquet
+# cluster_features_daily_behavioral_k100_v1.parquet
+# ...
+```
+
+---
+
+## Resumen de Dependencias Entre Pasos
+
+```
+datos_competicion/
+       |
+       v
+[Paso 1: Preprocess] ---> algos_panel.parquet
+       |                  algos_meta_good.parquet
+       |                  algos_features.parquet
+       v
+[Paso 2: Personality] --> algo_personality_static.parquet
+       |
+       v
+[Paso 3: Clustering] ---> cluster_map_*.parquet
+                          cluster_features_daily_*.parquet
+                          |
+                          v
+                    [Paso 4: RL Agent] (futuro)
+```
+
+Cada paso genera un `manifest.json` que registra el `parent_run_id`, permitiendo trazabilidad completa.
+
+---
+
+## Estructura del Proyecto
+
+```
+competicion AthenAI/
+├── pyproject.toml          # Configuracion del paquete
+├── configs/                # Archivos de configuracion YAML
+│   ├── preprocess.yaml     # Config para Paso 1
+│   ├── personality.yaml    # Config para Paso 2
+│   └── clustering.yaml     # Config para Paso 3
+├── data/
+│   ├── datos_competicion/  # Datos crudos de la competicion
+│   ├── cache/              # Outputs de cada pipeline (versionados)
+│   │   └── <run_id>/
+│   │       ├── manifest.json
+│   │       ├── pipeline.log
+│   │       └── *.parquet
+│   ├── reports/            # Reportes markdown generados
+│   └── figures/            # Graficas generadas
+└── src/athenai/
+    ├── core/               # Utilidades compartidas
+    │   ├── artifacts.py    # ArtifactStore, manifest, versionado
+    │   ├── config.py       # Dataclasses de configuracion
+    │   ├── logging.py      # Logging estructurado
+    │   ├── monitoring.py   # Timing de pasos
+    │   └── validation.py   # Validaciones de esquema
+    ├── data/               # Pasos de preprocesamiento
+    │   ├── algos_panel.py
+    │   ├── algos_meta.py
+    │   ├── algos_features.py
+    │   └── benchmark.py
+    ├── features/           # Feature engineering
+    │   └── personality.py
+    ├── factors/            # Exposiciones a factores
+    │   ├── factor_timeseries.py
+    │   └── exposures.py
+    ├── clustering/         # Clustering de algoritmos
+    │   ├── build_clusters.py
+    │   └── cluster_timeseries.py
+    ├── pipelines/          # Orquestadores de pipeline
+    │   ├── preprocess.py
+    │   ├── personality.py
+    │   └── clustering.py
+    └── scripts/            # Entry points CLI
+        ├── run_preprocess.py
+        ├── run_personality.py
+        └── run_clustering.py
+```
+
+---
+
+## Validaciones de Calidad
+
+El pipeline incluye validaciones automaticas en cada paso:
+
+- **Esquema**: Verifica que existan las columnas requeridas con tipos correctos
+- **Unicidad**: No hay duplicados en (algo_id, date)
+- **Orden**: Las fechas estan ordenadas dentro de cada algoritmo
+- **Look-ahead bias**: Los rolling windows usan min_samples=window, evitando usar datos futuros
+- **Retornos razonables**: Clipeo a +-50% para evitar outliers que distorsionen el clustering
+
+---
+
+## Ejecucion Completa (Resumen)
+
+```bash
+# 1. Instalar el paquete
+pip install -e .
+
+# 2. Preprocesamiento
+python -m athenai.scripts.run_preprocess --config configs/preprocess.yaml --overwrite
+# Anotar el run_id generado (ej: 20260119_225417_8512cdac4218)
+
+# 3. Features de personalidad
+python -m athenai.scripts.run_personality --latest --overwrite
+# O especificar: --preprocess-run-id 20260119_225417_8512cdac4218
+# Anotar el run_id generado (ej: 20260119_232926_111494c43caf)
+
+# 4. Actualizar configs/clustering.yaml con los run_ids
+
+# 5. Clustering
+python -m athenai.scripts.run_clustering --config configs/clustering.yaml --overwrite
+
+# 6. Verificar reportes
+ls data/reports/
+cat data/reports/preprocess_*.md
+cat data/reports/report_personality_*.md
+```
+
+---
+
+## Proximos Pasos (Roadmap)
+
+Los siguientes pasos estan en desarrollo:
+
+- **Capa 2 - Macro Estimator**: Un clasificador que infiere la fase del ciclo economico (Investment Clock) usando solo los datos de clusters.
+- **Capa 3 - RL Environment**: Entorno Gymnasium donde el estado es [features de clusters + fase macro estimada] y las acciones son pesos de cartera.
+- **Capa 3 - RL Agent**: PPO/DQN que aprende a maximizar Calmar Ratio (retorno / max drawdown).
+
+---
+
+## Notas Adicionales
+
+### Versionado de Outputs
+
+Cada ejecucion genera un `run_id` unico basado en timestamp + hash de configuracion:
+
+```
+20260119_225417_8512cdac4218
+^        ^      ^
+|        |      hash de config (12 chars)
+|        hora (HHMMSS)
+fecha (YYYYMMDD)
+```
+
+Esto permite:
+- Reproducibilidad: Saber exactamente que config genero cada output
+- Trazabilidad: El manifest registra el parent_run_id
+- Comparacion: Ejecutar con diferentes configs y comparar resultados
+
+### Formato Parquet
+
+Todos los outputs usan Apache Parquet porque:
+- Compresion eficiente (10-20x vs CSV)
+- Lectura selectiva de columnas
+- Esquema tipado
+- Compatible con Polars, Pandas, DuckDB

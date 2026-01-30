@@ -1,0 +1,62 @@
+# =============================================================================
+# Personality Feature Engineering Configuration
+# =============================================================================
+#
+# This config file is used by run_personality.py to compute static
+# personality features per algorithm.
+#
+# Usage:
+#   python -m athenai.scripts.run_personality --config configs/personality.yaml
+#
+# =============================================================================
+
+personality:
+  # -------------------------------------------------------------------------
+  # Required: Run ID of the preprocessing outputs to use
+  # -------------------------------------------------------------------------
+  # This should be the run_id from a previous preprocess run.
+  # Use --latest flag to auto-detect the most recent run.
+  preprocess_run_id: "20260119_225417_8512cdac4218"
+  
+  # -------------------------------------------------------------------------
+  # Personality Parameters
+  # -------------------------------------------------------------------------
+  
+  # Minimum observations required for GOOD universe output
+  # Algos with fewer observations will only appear in ALL output
+  min_obs_personality: 120
+  
+  # Annualization factor (trading days per year)
+  annualization: 252
+  
+  # Quantiles to compute for return distribution
+  quantiles: [0.01, 0.05, 0.95, 0.99]
+  
+  # Small epsilon for safe division
+  eps: 1.0e-12
+  
+  # Lag for momentum calculation (days)
+  momentum_lag: 120
+  
+  # Return clipping (should match preprocess config)
+  # Set to null to disable clipping
+  clip_returns: 0.50
+  
+  # -------------------------------------------------------------------------
+  # Date Filter (optional)
+  # -------------------------------------------------------------------------
+  # If set, only use data up to this date (YYYY-MM-DD format)
+  # Useful for train/test splits or point-in-time analysis
+  asof_date: null
+  
+  # -------------------------------------------------------------------------
+  # Directories
+  # -------------------------------------------------------------------------
+  cache_dir: "data/cache"
+  reports_dir: "data/reports"
+  
+  # -------------------------------------------------------------------------
+  # Output Filenames
+  # -------------------------------------------------------------------------
+  personality_all_name: "algo_personality_static.parquet"
+  personality_good_name: "algo_personality_static_good.parquet"

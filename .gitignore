@@ -1,0 +1,7 @@
+data/raw_algos/*
+
+**__pycache**
+
+[OLD]/*
+
+.venv/*
