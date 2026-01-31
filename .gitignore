@@ -7,3 +7,4 @@
 data/raw_algos/*
 data/processed/*
 *.parquet
+*.pkl
