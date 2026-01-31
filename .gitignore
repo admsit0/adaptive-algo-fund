@@ -1,7 +1,11 @@
 data/raw_algos/*
 
+data/processed/*
+
 **__pycache**
 
 [OLD]/*
 
 .venv/*
+
+ppo*
