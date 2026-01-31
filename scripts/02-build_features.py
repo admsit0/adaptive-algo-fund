@@ -2,6 +2,9 @@ import pandas as pd
 from src.core.config import UNIVERSE_FILE, ACTIVE_MASK_FILE
 from src.features.macro_proxy import build_macro_features
 from src.features.clustering import run_rolling_clustering
+from warnings import filterwarnings
+filterwarnings("ignore")
+
 
 if __name__ == "__main__":
     print("Cargando universo...")

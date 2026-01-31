@@ -1,0 +1,10 @@
+--- REPORT: Fold_2024 - In-Sample ---
+Total Return    |    210.71%
+CAGR            |     39.05%
+Vol             |      5.18%
+Max DD          |     -2.68%
+Sharpe          |       6.96
+Sortino         |       9.75
+Alpha           |     26.79%
+Beta            |      -0.04
+Win Rate        |     69.21%

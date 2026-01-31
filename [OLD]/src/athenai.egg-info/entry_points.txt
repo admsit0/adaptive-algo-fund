@@ -1,2 +1,0 @@
-[console_scripts]
-athenai-preprocess = athenai.scripts.run_preprocess:main

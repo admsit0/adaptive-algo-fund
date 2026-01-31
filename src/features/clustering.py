@@ -11,7 +11,7 @@ def run_rolling_clustering(returns_df, active_mask, window=60):
     1. Retornos Reales (para calcular P&L).
     2. Features Técnicas (Volatilidad, Momentum) para el Agente.
     """
-    print("🔄 Ejecutando Clustering + Feature Engineering (Root Fix)...")
+    print("🔄 Ejecutando Clustering + Feature Engineering ...")
     
     dates = returns_df.index
     kmeans = KMeans(n_clusters=N_CLUSTERS, n_init=10, random_state=42)

@@ -7,12 +7,14 @@ DATA_DIR = PROJECT_ROOT / "data"
 RAW_ALGOS_DIR = DATA_DIR / "raw_algos"
 BENCHMARK_DIR = DATA_DIR / "benchmark"
 PROCESSED_DIR = DATA_DIR / "processed"
+RESULTS_DIR = PROJECT_ROOT / "results"
+TRAINING_LOG_DIR = PROJECT_ROOT / "training_logs"
 
 # Crear directorios si no existen
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
 # Parámetros del Modelo
-REBALANCE_FREQ = 1   # Rebalancear clusters cada 5 días (ahorra CPU)
+REBALANCE_FREQ = 1   # Rebalancear clusters cada día
 
 # Archivos procesados
 UNIVERSE_FILE = PROCESSED_DIR / "universe_returns.parquet"
@@ -32,9 +34,9 @@ TAKE_PROFIT_PCT = 0.3 # Si ganamos un 20% en un día, CERRAMOS para asegurar (Op
 TRADING_COST_BPS = 0.0 # 5 basis points por cambio
 
 TRAIN_START_DATE = "2020-06-01"
-TRAIN_END_DATE   = "2023-12-31"
+TRAIN_END_DATE   = "2024-12-29"
 
-TEST_START_DATE  = "2024-01-01"
+TEST_START_DATE  = "2024-12-30"
 TEST_END_DATE    = "2024-12-31"
 
 # Modo Cross-Validation: Si True, ignora las fechas fijas y hace bucles anuales

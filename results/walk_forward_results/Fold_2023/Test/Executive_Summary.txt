@@ -1,0 +1,10 @@
+--- REPORT: Fold_2023 - Out-of-Sample ---
+Total Return    |     13.65%
+CAGR            |     15.41%
+Vol             |      1.61%
+Max DD          |     -0.56%
+Sharpe          |       7.69
+Sortino         |      12.28
+Alpha           |     11.45%
+Beta            |      -0.07
+Win Rate        |     70.36%

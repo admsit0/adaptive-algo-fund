@@ -1,11 +1,13 @@
 import pandas as pd
 import numpy as np
 import os
-from stable_baselines3 import PPO
+from warnings import filterwarnings
+filterwarnings("ignore")
+
 
 from src.core.config import (
-    CLUSTERS_FILE, MACRO_FILE, BENCHMARK_DIR, N_CLUSTERS,
-    TRAIN_START_DATE, TRAIN_END_DATE # <--- Importamos las fechas
+    CLUSTERS_FILE, MACRO_FILE, BENCHMARK_DIR, TRAINING_LOG_DIR,
+    TRAIN_START_DATE, TRAIN_END_DATE
 )
 from src.envs.portfolio_env import PortfolioEnv
 from src.models.agent_rl import create_agent
@@ -68,18 +70,23 @@ if __name__ == "__main__":
     print(f"✅ Datos Listos: {len(train_c)} días de entrenamiento.")
     print(f"📊 Check: Media Retornos: {train_c.mean().mean():.6f}")
 
-    # Entorno AGRESIVO (Leverage x2)
+    
+    TO_PENALTY = 0.0005
+    TIMESTEPS = 100000
+
     env = PortfolioEnv(
         train_c, train_m, train_b, 
-        log_dir="data/logs",
-        leverage=3.0,            # Apalancamiento x2
-        turnover_penalty=0.00005   # Coste bajo
+        log_dir=TRAINING_LOG_DIR,
+        leverage=3.0,            # Apalancamiento x3
+        turnover_penalty=TO_PENALTY   # Coste bajo
     )
     
     model = create_agent(env)
     
     print("🚀 Iniciando Entrenamiento...")
-    model.learn(total_timesteps=100000) # Más steps para estrategia compleja
+    model.learn(total_timesteps=TIMESTEPS)
     
-    model.save("ppo_athen_aggressive")
-    print("💾 Modelo guardado: ppo_athen_very_aggressive_100k.zip")
+    model.save("ppo_athenai_final")
+    print("💾 Modelo guardado: ppo_athenai_final.zip")
+
+    env.save_execution_to_csv(f'ppo_{TIMESTEPS}_steps_{TO_PENALTY}_penalty')

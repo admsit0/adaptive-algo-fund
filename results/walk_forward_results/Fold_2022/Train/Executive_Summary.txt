@@ -1,0 +1,10 @@
+--- REPORT: Fold_2022 - In-Sample ---
+Total Return    |    214.59%
+CAGR            |    120.96%
+Vol             |      8.22%
+Max DD          |     -1.74%
+Sharpe          |      14.35
+Sortino         |      31.24
+Alpha           |     64.25%
+Beta            |      -0.02
+Win Rate        |     70.58%

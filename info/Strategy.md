@@ -1,4 +1,4 @@
-Aquí tienes la transcripción del diagrama manuscrito:
+Transcripción del diagrama manuscrito:
 
 **1. Selección de Activos**
 
